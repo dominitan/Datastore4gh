@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Data Store 4GH</title>
+<script src="https://js.paystack.co/v1/inline.js"></script>
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm';
+
+const supabaseUrl = 'https://YOUR_PROJECT.supabase.co';
+const supabaseAnonKey = 'YOUR_ANON_KEY';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+let balance = 0;
+
+// ---------------- Load Wallet Balance ----------------
+async function loadBalance() {
+  const email = document.getElementById('email').value;
+  if(!email) return;
+  const { data } = await supabase.from('wallet').select('balance').eq('email', email).single();
+  balance = data ? data.balance : 0;
+  document.getElementById('balance').innerText = `Wallet Balance: GHS ${balance}`;
+}
+
+// ---------------- Load Bundles ----------------
+async function loadBundles() {
+  const { data } = await supabase.from('bundles').select('*');
+  const container = document.getElementById('bundleContainer');
+  container.innerHTML = '';
+  if(data){
+    const networks = {};
+    data.forEach(b => {
+      if(!networks[b.network]) networks[b.network] = [];
+      networks[b.network].push(b);
+    });
+
+    for(const network in networks){
+      const group = document.createElement('optgroup');
+      group.label = network;
+      networks[network].forEach(b => {
+        const opt = document.createElement('option');
+        opt.value = b.id;
+        opt.innerText = `${b.size}GB - GHS ${b.price}`;
+        group.appendChild(opt);
+      });
+      container.appendChild(group);
+    }
+  }
+}
+
+// ---------------- Deposit via Paystack ----------------
+window.handleDeposit = async function() {
+  const email = document.getElementById('email').value;
+  const phone = document.getElementById('phone').value;
+  const amount = Number(document.getElementById('amount').value);
+  if(!email || !phone || !amount) return alert('Fill all fields');
+
+  const ref = '#a'+Math.floor(10000+Math.random()*90000);
+
+  const handler = PaystackPop.setup({
+    key: 'pk_live_37c572730932ad4d495253ea03e2346f1f5b3aae',
+    email, amount: amount*100, currency: 'GHS', ref,
+    callback: async function(response) {
+      alert('Payment successful! Verifying...');
+      try {
+        const verifyRes = await fetch('/functions/verifyPayment', {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json' },
+          body: JSON.stringify({ reference: response.reference, email, amount })
+        });
+        const result = await verifyRes.json();
+        if(result.success){
+          balance = result.wallet;
+          document.getElementById('balance').innerText = `Wallet Balance: GHS ${balance}`;
+          alert('Wallet credited successfully');
+        } else alert('Payment verification failed: '+result.error);
+      } catch(err){ alert('Verification error: '+err.message); }
+    },
+    onClose: function(){ alert('Payment cancelled'); }
+  });
+  handler.openIframe();
+};
+
+// ---------------- Purchase Bundle ----------------
+window.handlePurchase = async function() {
+  const selectedId = document.getElementById('bundleContainer').value;
+  const recipient = document.getElementById('recipientNumber').value;
+  if(!selectedId || !recipient) return alert('Select bundle & enter recipient');
+
+  const { data: bundle } = await supabase.from('bundles').select('*').eq('id', selectedId).single();
+  if(!bundle) return;
+  if(balance < bundle.price) return alert('Insufficient balance');
+
+  const refNum = '#a'+Math.floor(10000+Math.random()*90000);
+  const newBalance = balance - bundle.price;
+
+  // Insert order
+  await supabase.from('orders').insert({
+    email: document.getElementById('email').value,
+    recipient_number: recipient,
+    bundle_id: bundle.id,
+    network: bundle.network,
+    size: bundle.size,
+    amount: bundle.price,
+    status: 'pending',
+    reference: refNum
+  });
+
+  // Update wallet
+  await supabase.rpc('debit_wallet', { p_email: document.getElementById('email').value, p_amount: bundle.price });
+  balance = newBalance;
+  document.getElementById('balance').innerText = `Wallet Balance: GHS ${balance}`;
+
+  // WhatsApp notification
+  const adminPhone = '0247918766';
+  const msg = `✅ *New Data Purchase!*\n\n👤 Buyer: ${document.getElementById('email').value}\n📞 Recipient: ${recipient}\n📡 Network: ${bundle.network}\n💾 Bundle: ${bundle.size}GB\n💰 Amount: GHS ${bundle.price}\n🔖 Reference: ${refNum}\n📅 Date: ${new Date().toLocaleString()}`;
+  const waUrl = `https://wa.me/${adminPhone}?text=${encodeURIComponent(msg)}`;
+  window.open(waUrl,'_blank');
+
+  alert(`Purchased ${bundle.size}GB ${bundle.network} bundle. New balance: GHS ${newBalance}`);
+};
+
+window.onload = () => { loadBundles(); }
+</script>
+
+<style>
+body { font-family:sans-serif; padding:2rem; background:#f5f7fa; }
+h1 { text-align:center; }
+section { margin-bottom:2rem; padding:1rem; border-radius:8px; background:#fff; box-shadow:0 2px 5px rgba(0,0,0,0.1);}
+input, select { margin-bottom:0.5rem; padding:0.5rem; width:100%; border-radius:4px; border:1px solid #ccc; }
+button { padding:0.6rem 1rem; border:none; border-radius:4px; background:#28a745; color:#fff; cursor:pointer; }
+button:hover { background:#218838; }
+#floatingWA { position:fixed; bottom:20px; right:20px; z-index:1000; }
+</style>
+</head>
+<body>
+
+<h1>Data Store 4GH</h1>
+
+<section>
+<h2>Wallet Deposit</h2>
+<input id="email" placeholder="Email" onblur="loadBalance()" />
+<input id="phone" placeholder="Phone"/>
+<input id="amount" type="number" placeholder="Amount GHS"/>
+<button onclick="handleDeposit()">Deposit</button>
+<p id="balance">Wallet Balance: 0</p>
+</section>
+
+<section>
+<h2>Purchase Bundle</h2>
+<input id="recipientNumber" placeholder="Recipient Number" />
+<select id="bundleContainer"></select>
+<button onclick="handlePurchase()">Purchase</button>
+</section>
+
+<!-- Floating WhatsApp -->
+<a id="floatingWA" href="https://wa.me/0247918766" target="_blank">
+<img src="https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg" width="50" alt="WhatsApp Admin"/>
+</a>
+
+</body>
+</html>
